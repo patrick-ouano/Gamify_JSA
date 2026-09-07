@@ -9,6 +9,7 @@ from sheets import actions
 from wordle import wordle_actions
 import datetime
 from zoneinfo import ZoneInfo
+
 # 1. Setup Intents 
 intents = discord.Intents.default()
 intents.message_content = True # Allows bot to read commands
