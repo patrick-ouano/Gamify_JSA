@@ -256,11 +256,12 @@ def process_event_data(client, master_sheet_id, event_sheet_url, xp_amount):
     log_event_completion(log_sheet, event_id, xp_amount)
 
     return f"✅  Success! Processed Sheet ID {event_id[:5]}... Updated {existing_members_count} and added {new_members_count}."
-def get_join(client, master_sheet_id, email, discord_id):
+def get_join(client, master_sheet_id, email, discord_id, display_name=""):
     sheet = client.open_by_key(master_sheet_id)
     master = sheet.worksheet("Master_Roster")
     email = email.strip().lower()
     discord_id = str(discord_id).strip()
+    display_name = str(display_name or "").strip()
 
     records = master.get_all_records()
     for i, row in enumerate(records):
@@ -277,6 +278,9 @@ def get_join(client, master_sheet_id, email, discord_id):
             if row_discord_id == "":
                 row_number = i + 2
                 master.update_cell(row_number, 4, discord_id)
+                # Fill blank Name from Discord if the roster row has no name yet
+                if display_name and not str(row.get("Name", "")).strip():
+                    master.update_cell(row_number, 1, display_name)
                 return "🔗 **Account Linked!** We've successfully connected your Discord to your JSA records. Welcome!"
             
             # Case 3: Email is linked to another Discord account.
@@ -284,7 +288,7 @@ def get_join(client, master_sheet_id, email, discord_id):
 
     # Case 4: Email is not in Master Roster. 
     new_row = [
-        "", # Name
+        display_name, # Name (from Discord display name)
         email, # Email
         "", # Year
         discord_id, # Discord ID

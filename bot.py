@@ -65,7 +65,13 @@ async def join(interaction: discord.Interaction, email: str):
 
     client = get_client()
 
-    result = actions.get_join(client, config.SHEET_ID, email, str(interaction.user.id))
+    result = actions.get_join(
+        client,
+        config.SHEET_ID,
+        email,
+        str(interaction.user.id),
+        interaction.user.display_name,
+    )
 
     await interaction.response.send_message(result)
 
