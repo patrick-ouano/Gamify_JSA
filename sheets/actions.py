@@ -9,6 +9,8 @@ master_cache = [""]
 # --- HEADER CONFIGURATION ---
 MASTER_HEADERS = ['Name', 'Email', 'Year', 'Discord_ID', 'Total_XP', 'Rank']
 AUDIT_HEADERS = ['Message_ID','Timestamp','Officer_ID','Recipient_ID','XP_Amount','Reason']
+SCHEDULED_QUEST_SHEET = "Scheduled_Quests"
+SCHEDULED_QUEST_HEADERS = ["Date", "Type", "Quest_Name"]
 
 def calculate_rank(xp):
     # Calculates the rank name based on XP thresholds.
@@ -270,6 +272,7 @@ def get_join(client, master_sheet_id, email, discord_id, display_name=""):
         
         # Case 1: Email and Discord account are already linked.
         if row_discord_id == discord_id:
+            update_master_cache(client, master_sheet_id)
             return "✨ **You're already in!** This Discord account is already registered in our system."
 
         if row.get("Email", "").strip().lower() == email:
@@ -281,6 +284,7 @@ def get_join(client, master_sheet_id, email, discord_id, display_name=""):
                 # Fill blank Name from Discord if the roster row has no name yet
                 if display_name and not str(row.get("Name", "")).strip():
                     master.update_cell(row_number, 1, display_name)
+                update_master_cache(client, master_sheet_id)
                 return "🔗 **Account Linked!** We've successfully connected your Discord to your JSA records. Welcome!"
             
             # Case 3: Email is linked to another Discord account.
@@ -296,6 +300,7 @@ def get_join(client, master_sheet_id, email, discord_id, display_name=""):
         "Newcomer" # Rank
     ]
     master.append_row(new_row)
+    update_master_cache(client, master_sheet_id)
     return "🎉 **Welcome aboard!** You've been successfully registered in the JSA XP system. Time to start earning! 🚀"
 
 def get_leaderboard(client, master_sheet_id, top=10, mode="regular"):
@@ -327,51 +332,60 @@ def get_leaderboard(client, master_sheet_id, top=10, mode="regular"):
     leaderboard_data.sort(key=lambda x: x[1], reverse=True)
     return leaderboard_data
 
+def _find_cached_member(discord_id):
+    records = master_cache
+    if not isinstance(records, list):
+        return None
+    for row in records:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("Discord_ID", "")).strip() == discord_id:
+            return row
+    return None
+
 def get_xp(client, master_sheet_id, discord_id):
     discord_id = str(discord_id).strip()
-    sheet = client.open_by_key(master_sheet_id)
-    #master = sheet.worksheet("Master_Roster")
-    #records = master_cache.get_all_records()
-    records = master_cache
-    for row in records:
-        row_discord_id = str(row.get("Discord_ID", "")).strip()
-        if row_discord_id == discord_id:
-            try:
-                xp = int(row.get("Total_XP", 0))
-            except:
-                xp = 0
-            
-            rank = row.get("Rank", "Unknown")
-            
-            # Calculate progress to next rank
-            sorted_thresholds = sorted(config.RANK_THRESHOLDS.keys())
-            current_threshold = 0
-            for threshold in sorted_thresholds:
-                if xp >= threshold:
-                    current_threshold = threshold
-                else:
-                    break
-            
-            next_threshold, next_rank_name = get_next_rank_info(xp)
-            
-            if next_threshold is None:
-                # At max rank
-                progress_bar = generate_progress_bar(xp, current_threshold, None)
-                return (
-                    f"Your rank is **{rank}** and you currently have **{xp} XP**!\n"
-                    f"Progress: {progress_bar}\n"
-                    f"🏆 **You've reached the maximum rank!**"
-                )
-            else:
-                xp_needed = next_threshold - xp
-                progress_bar = generate_progress_bar(xp, current_threshold, next_threshold)
-                return (
-                    f"Your rank is **{rank}** and you currently have **{xp} XP**!\n"
-                    f"Progress to **{next_rank_name}**: {progress_bar}\n"
-                    f"**{xp_needed} XP** needed to rank up!"
-                )
-        
-    return "Your Discord account was not found in JSA's XP system.\nPlease register using the join command (Ex: !join email@ufl.edu)."
+    row = _find_cached_member(discord_id)
+    if row is None:
+        update_master_cache(client, master_sheet_id)
+        row = _find_cached_member(discord_id)
+    if row is None:
+        return "Your Discord account was not found in JSA's XP system.\nPlease register using the join command (Ex: !join email@ufl.edu)."
+
+    try:
+        xp = int(row.get("Total_XP", 0))
+    except:
+        xp = 0
+
+    rank = row.get("Rank", "Unknown")
+
+    # Calculate progress to next rank
+    sorted_thresholds = sorted(config.RANK_THRESHOLDS.keys())
+    current_threshold = 0
+    for threshold in sorted_thresholds:
+        if xp >= threshold:
+            current_threshold = threshold
+        else:
+            break
+
+    next_threshold, next_rank_name = get_next_rank_info(xp)
+
+    if next_threshold is None:
+        # At max rank
+        progress_bar = generate_progress_bar(xp, current_threshold, None)
+        return (
+            f"Your rank is **{rank}** and you currently have **{xp} XP**!\n"
+            f"Progress: {progress_bar}\n"
+            f"🏆 **You've reached the maximum rank!**"
+        )
+
+    xp_needed = next_threshold - xp
+    progress_bar = generate_progress_bar(xp, current_threshold, next_threshold)
+    return (
+        f"Your rank is **{rank}** and you currently have **{xp} XP**!\n"
+        f"Progress to **{next_rank_name}**: {progress_bar}\n"
+        f"**{xp_needed} XP** needed to rank up!"
+    )
 def update_master_cache(client,master_sheet_id):
     try:
         sheet = client.open_by_key(master_sheet_id)
@@ -486,29 +500,142 @@ def get_random_quest(client, master_sheet_id, sheet_name):
         print(f"Error fetching quest from {sheet_name}: {e}")
         return None
 
-def get_specific_quest(client, master_sheet_id, sheet_name, quest_name):
-    # Fetches a specific quest by its name from the sheet
+def _find_quest_row(client, master_sheet_id, sheet_name, quest_name):
+    # Looks up a quest by name without updating Last_Used
     try:
         spreadsheet = client.open_by_key(master_sheet_id)
         worksheet = spreadsheet.worksheet(sheet_name)
         records = worksheet.get_all_records()
         headers = worksheet.row_values(1)
-        
+
         if "Last_Used" not in headers:
             return None
         last_used_col_idx = headers.index("Last_Used") + 1
 
-        # Searches for the quest by name
         for i, row in enumerate(records):
             if str(row.get("Quest Name", "")).strip().lower() == quest_name.strip().lower():
-                # Updates the timestamp 
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                worksheet.update_cell(i + 2, last_used_col_idx, now_str)
+                return {
+                    "data": row,
+                    "row_num": i + 2,
+                    "worksheet": worksheet,
+                    "last_used_col_idx": last_used_col_idx,
+                }
+        return None
+    except Exception as e:
+        print(f"Error finding quest in {sheet_name}: {e}")
+        return None
+
+def find_quest(client, master_sheet_id, sheet_name, quest_name):
+    # Returns the quest row if it exists, without marking it used
+    found = _find_quest_row(client, master_sheet_id, sheet_name, quest_name)
+    return found["data"] if found else None
+
+def get_specific_quest(client, master_sheet_id, sheet_name, quest_name):
+    # Fetches a specific quest by its name from the sheet and marks it used
+    found = _find_quest_row(client, master_sheet_id, sheet_name, quest_name)
+    if not found:
+        return None
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    found["worksheet"].update_cell(found["row_num"], found["last_used_col_idx"], now_str)
+    return found["data"]
+
+def _normalize_date(value):
+    # Sheets may return dates as strings, serials, or datetime-like objects
+    if value is None:
+        return ""
+    if hasattr(value, "date") and callable(value.date):
+        try:
+            return value.date().isoformat()
+        except Exception:
+            pass
+    s = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(s[:10], fmt).date().isoformat()
+        except ValueError:
+            continue
+    return s
+
+def _get_scheduled_worksheet(client, master_sheet_id):
+    spreadsheet = client.open_by_key(master_sheet_id)
+    titles = [ws.title for ws in spreadsheet.worksheets()]
+    if SCHEDULED_QUEST_SHEET not in titles:
+        worksheet = spreadsheet.add_worksheet(title=SCHEDULED_QUEST_SHEET, rows=100, cols=3)
+        worksheet.append_row(SCHEDULED_QUEST_HEADERS)
+        return worksheet
+
+    worksheet = spreadsheet.worksheet(SCHEDULED_QUEST_SHEET)
+    headers = worksheet.row_values(1)
+    if not headers:
+        worksheet.append_row(SCHEDULED_QUEST_HEADERS)
+    return worksheet
+
+def set_scheduled_quest(client, master_sheet_id, date_str, sheet_name, quest_name):
+    # Saves a quest for a date/type, replacing any existing entry for that slot
+    try:
+        worksheet = _get_scheduled_worksheet(client, master_sheet_id)
+        records = worksheet.get_all_records()
+        headers = worksheet.row_values(1)
+        if "Quest_Name" not in headers:
+            return None
+        quest_name_col = headers.index("Quest_Name") + 1
+
+        for i, row in enumerate(records):
+            if _normalize_date(row.get("Date", "")) == date_str and str(row.get("Type", "")).strip() == sheet_name:
+                worksheet.update_cell(i + 2, quest_name_col, quest_name)
+                return "replaced"
+        worksheet.append_row([date_str, sheet_name, quest_name], value_input_option="RAW")
+        return "created"
+    except Exception as e:
+        print(f"Error saving scheduled quest: {e}")
+        return None
+
+def get_scheduled_quest(client, master_sheet_id, date_str, sheet_name):
+    # Returns the queued quest for a date/type, or None
+    try:
+        worksheet = _get_scheduled_worksheet(client, master_sheet_id)
+        records = worksheet.get_all_records()
+        for row in records:
+            if _normalize_date(row.get("Date", "")) == date_str and str(row.get("Type", "")).strip() == sheet_name:
                 return row
         return None
     except Exception as e:
-        print(f"Error fetching specific quest: {e}")
+        print(f"Error reading scheduled quest: {e}")
         return None
+
+def clear_scheduled_quest(client, master_sheet_id, date_str, sheet_name):
+    # Removes the queued quest for a date/type after it posts
+    try:
+        worksheet = _get_scheduled_worksheet(client, master_sheet_id)
+        records = worksheet.get_all_records()
+        for i, row in enumerate(records):
+            if _normalize_date(row.get("Date", "")) == date_str and str(row.get("Type", "")).strip() == sheet_name:
+                worksheet.delete_rows(i + 2)
+                return True
+        return False
+    except Exception as e:
+        print(f"Error clearing scheduled quest: {e}")
+        return False
+
+def list_scheduled_quests(client, master_sheet_id, today_str):
+    # Returns upcoming scheduled quests (today or later)
+    try:
+        worksheet = _get_scheduled_worksheet(client, master_sheet_id)
+        records = worksheet.get_all_records()
+        upcoming = []
+        for row in records:
+            row_date = _normalize_date(row.get("Date", ""))
+            if row_date and row_date >= today_str:
+                upcoming.append({
+                    "Date": row_date,
+                    "Type": row.get("Type", ""),
+                    "Quest_Name": row.get("Quest_Name", ""),
+                })
+        upcoming.sort(key=lambda r: (_normalize_date(r.get("Date", "")), str(r.get("Type", ""))))
+        return upcoming
+    except Exception as e:
+        print(f"Error listing scheduled quests: {e}")
+        return []
 
 # wordle_claim_exists (function to return if the wordle is already claimed 
 def wordle_claim_exists(client, master_sheet_id, puzzle, discord_id):

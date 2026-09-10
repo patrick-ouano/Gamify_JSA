@@ -182,22 +182,52 @@ def format_quest_embed(quest, category_name):
     embed.set_footer(text=f"Frequency: {'Weekly' if is_weekly else 'Daily'}")
     return embed
 
+ET = ZoneInfo('America/New_York')
+
+def schedule_date_for(quest_type):
+    # Daily queues for tomorrow. Weekly queues for the next Monday 8 AM slot.
+    now = datetime.datetime.now(ET)
+    if quest_type == "Weekly_Quests":
+        weekday = now.weekday()
+        if weekday == 0 and now.time() < datetime.time(8, 0):
+            return now.date()
+        days_ahead = (7 - weekday) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        return now.date() + datetime.timedelta(days=days_ahead)
+    return now.date() + datetime.timedelta(days=1)
+
+async def announce_scheduled_or_random_quest(channel, client, sheet_name, announcement_text, today_str):
+    scheduled = actions.get_scheduled_quest(client, config.SHEET_ID, today_str, sheet_name)
+    quest = None
+    if scheduled:
+        quest_name = str(scheduled.get("Quest_Name", "")).strip()
+        quest = actions.get_specific_quest(client, config.SHEET_ID, sheet_name, quest_name)
+        actions.clear_scheduled_quest(client, config.SHEET_ID, today_str, sheet_name)
+        if not quest:
+            print(f"Scheduled quest '{quest_name}' not found in {sheet_name}; falling back to random.")
+    if not quest:
+        quest = actions.get_random_quest(client, config.SHEET_ID, sheet_name)
+    if quest:
+        await channel.send(announcement_text, embed=format_quest_embed(quest, sheet_name))
+
 # Task for Daily Quests (Runs every 24 hours)
-@tasks.loop(time=datetime.time(hour=8, minute=0, tzinfo=ZoneInfo('America/New_York')))
+@tasks.loop(time=datetime.time(hour=8, minute=0, tzinfo=ET))
 async def daily_quest_loop():
     channel = bot.get_channel(config.QUEST_CHANNEL_ID)
     if channel:
         client = get_client()
-        quest = actions.get_random_quest(client, config.SHEET_ID, "Daily_Quests")
-        if quest:
-            await channel.send("☀️ **Today's Daily Quest is live!**", embed=format_quest_embed(quest, "Daily_Quests"))
+        today_str = datetime.datetime.now(ET).date().isoformat()
+        await announce_scheduled_or_random_quest(
+            channel, client, "Daily_Quests", "☀️ **Today's Daily Quest is live!**", today_str
+        )
         #after the daily we check weekly
-        day_of_week = datetime.datetime.weekday(datetime.date.today())
+        day_of_week = datetime.datetime.now(ET).weekday()
         #days are 0(monday)-6(sunday)
         if(day_of_week == 0):
-            quest = actions.get_random_quest(client, config.SHEET_ID, "Weekly_Quests")
-            if quest:
-                await channel.send("🔥 **A new Weekly Quest has appeared!**", embed=format_quest_embed(quest, "Weekly_Quests"))
+            await announce_scheduled_or_random_quest(
+                channel, client, "Weekly_Quests", "🔥 **A new Weekly Quest has appeared!**", today_str
+            )
 #Task for updating master cache (Runs every 5 mins)
 @tasks.loop(minutes=5)
 async def update_master_cache():
@@ -277,6 +307,61 @@ async def post_specific_quest(interaction: discord.Interaction, type: str, name:
             await interaction.followup.send("❌ Quests channel not found.")
     else:
         await interaction.followup.send(f"❌ Error: Could not find a quest named '{name}' in the {type} sheet.")
+
+# The /schedule_quest command
+@bot.tree.command(name="schedule_quest", description="Queue a specific quest for the next daily or weekly post", guild=GUILD_ID)
+@app_commands.describe(type="Choose Daily or Weekly", name="Exactly match the Quest Name from the sheet")
+@app_commands.choices(type=[
+    app_commands.Choice(name="Daily", value="Daily_Quests"),
+    app_commands.Choice(name="Weekly", value="Weekly_Quests")
+])
+@app_commands.checks.has_role(config.OFFICER_ROLE_ID)
+async def schedule_quest(interaction: discord.Interaction, type: str, name: str):
+    await interaction.response.defer(ephemeral=True)
+
+    client = get_client()
+    quest = actions.find_quest(client, config.SHEET_ID, type, name)
+    if not quest:
+        await interaction.followup.send(f"❌ Error: Could not find a quest named '{name}' in the {type} sheet.")
+        return
+
+    quest_name = quest["Quest Name"]
+    target_date = schedule_date_for(type)
+    result = actions.set_scheduled_quest(client, config.SHEET_ID, target_date.isoformat(), type, quest_name)
+    if not result:
+        await interaction.followup.send("❌ Could not save the scheduled quest.")
+        return
+
+    label = "Daily" if type == "Daily_Quests" else "Weekly"
+    if type == "Daily_Quests":
+        when = "tomorrow"
+    elif target_date == datetime.datetime.now(ET).date():
+        when = "this morning's Monday post"
+    else:
+        when = "the next Monday"
+    action = "Replaced" if result == "replaced" else "Scheduled"
+    await interaction.followup.send(
+        f"✅ {action} '{quest_name}' as the {label} quest for {target_date.isoformat()} ({when})."
+    )
+
+# The /scheduled_quest command
+@bot.tree.command(name="scheduled_quest", description="Show quests queued for upcoming daily/weekly posts", guild=GUILD_ID)
+@app_commands.checks.has_role(config.OFFICER_ROLE_ID)
+async def scheduled_quest(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    client = get_client()
+    today_str = datetime.datetime.now(ET).date().isoformat()
+    upcoming = actions.list_scheduled_quests(client, config.SHEET_ID, today_str)
+    if not upcoming:
+        await interaction.followup.send("No quests are currently scheduled.")
+        return
+
+    lines = []
+    for row in upcoming:
+        label = "Daily" if row.get("Type") == "Daily_Quests" else "Weekly"
+        lines.append(f"- **{label}** on `{row.get('Date', '')}`: {row.get('Quest_Name', '')}")
+    await interaction.followup.send("**Upcoming scheduled quests:**\n" + "\n".join(lines))
 
 # Store the message ID for the access message
 ACCESS_MESSAGE_ID = 1465869081210261770 # Replace with your message ID after posting
@@ -425,7 +510,9 @@ async def help(interaction: discord.Interaction):
     if(isofficer):
         descriptiontext +=  "\n"\
                             "### Officer Commands\n"\
-                            "`/process_event`: Adds attendance sheet url for event"
+                            "`/process_event`: Adds attendance sheet url for event\n"\
+                            "`/schedule_quest`: Queue a quest for the next daily or weekly post\n"\
+                            "`/scheduled_quest`: Show quests queued for upcoming posts"
     descriptiontext += "\n\n"
     descriptiontext+="For any questions feel free to reach out to an officer."
     my_embed = discord.Embed(title="Battle Pass Help",
