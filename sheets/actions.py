@@ -87,6 +87,18 @@ def find_name_column(records):
             return header
     return None
 
+def find_year_column(records):
+    # Scans headers for a year column (Year, Class Year, Graduation Year, etc.)
+    if not records:
+        return None
+
+    headers = records[0].keys()
+    for header in headers:
+        clean_header = header.lower().strip()
+        if "year" in clean_header:
+            return header
+    return None
+
 def is_event_processed(log_sheet, event_id):
     # Checks if the event_id already exists in Column A of Attendance_Logs
     try:
@@ -183,6 +195,7 @@ def process_event_data(client, master_sheet_id, event_sheet_url, xp_amount):
     
     # 4. Finds the Name Column in the Event Sheet
     name_col_name = find_name_column(event_records)
+    year_col_name = find_year_column(event_records)
     
         # 6. Creates a lookup directory for Master Roster with current XP
     # Format: {'email@ufl.edu': {'row_num': int, 'current_xp': int}}
@@ -199,7 +212,8 @@ def process_event_data(client, master_sheet_id, event_sheet_url, xp_amount):
             master_map[email] = {
                 'row_num': i + 2,  # Row number (1-indexed, row 1 is header)
                 'current_xp': current_xp,
-                'discord_id': discord_id
+                'discord_id': discord_id,
+                'year': row.get("Year", "")
             }
 
     # 7. Collect all updates for batch processing
@@ -212,8 +226,8 @@ def process_event_data(client, master_sheet_id, event_sheet_url, xp_amount):
     # Process Attendees - collect updates, don't execute yet
     for row in event_records:
         attendee_email = str(row[email_col_name]).strip().lower()
-        attendee_name = row.get(name_col_name, "Unknown") if name_col_name else "Unknown" 
-        attendee_year = row.get("Year", "")
+        attendee_name = row.get(name_col_name, "Unknown") if name_col_name else "Unknown"
+        event_year = str(row.get(year_col_name, "")).strip() if year_col_name else ""
 
         # If email is empty, skip
         if not attendee_email:
@@ -225,6 +239,7 @@ def process_event_data(client, master_sheet_id, event_sheet_url, xp_amount):
             row_num = member_info['row_num']
             current_xp = member_info['current_xp']
             discord_id = member_info['discord_id']
+            attendee_year = event_year if event_year else member_info.get('year', "")
             
             new_xp = current_xp + xp_amount
             new_rank = calculate_rank(new_xp)
@@ -240,7 +255,7 @@ def process_event_data(client, master_sheet_id, event_sheet_url, xp_amount):
 
         else:
             # Scenario B: The Newcomer (Auto-Enroll)
-            new_row = [attendee_name, attendee_email, attendee_year, "", xp_amount, "Newcomer"]
+            new_row = [attendee_name, attendee_email, event_year, "", xp_amount, "Newcomer"]
             new_members.append(new_row)
             new_members_count += 1
             print(f"Added {attendee_email}!")
@@ -444,7 +459,7 @@ def award_quest_xp(client, master_sheet_id, discord_id, xp_amount, officer_id=No
 
             return f"Added {xp_amount} XP! New Total: {new_xp} ({new_rank})"
 
-    return "❌ User not found in roster. Please use !join first."
+    return "❌ User not found in roster. Please use /join first."
 
 def get_random_quest(client, master_sheet_id, sheet_name):
     # Picks a random quest from the specified sheet and avoids back-to-back repeats
